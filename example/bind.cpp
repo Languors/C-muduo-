@@ -15,7 +15,7 @@ int main()
     arry.push_back(std::bind(print, "hello", 10));
     arry.push_back(std::bind(print, "leihou", 20));
     arry.push_back(std::bind(print, "nihao", 30));
-    arry.push_back(std::bind(print, "bind", 40));
+    arry.push_back(std::bind(print, "bitejiuyeke", 40));
 
     for (auto &f:arry) {
         f();
