@@ -1,4 +1,4 @@
-# C++-muduo-
+ # C++仿muduo库One Thread One Loop式主从Reactor模型实现⾼并发服务器：
 实现仿muduo库One Thread One Loop式主从Reactor模型实现高并发服务器: 通过实现的高并发服务器组件，可以简介快速的完成一个高性能的服务器搭建。
 并且，通过组件内提供的不同应用层协议支持，也可以快速完成一个高性能应用服务器的搭建。
 在这里，要明确的是我们要实现的是一个高并发服务器组件，因此当前的项目中并不包含实际的业务内容。
@@ -87,13 +87,106 @@ Connection模块是对Buffer模块，Socket模块，Channel模块的一个整体
 1.实现向Channel提供可读，可写，错误等不同事件的IO事件回调函数，然后将Channel和对应的描述符添加到Poller事件监控中。
 2.当描述符在Poller模块中就绪了IO可读事件，则调用描述符对应Channel中保存的可读事件处理函数，进行数据读取，将socket接收缓冲区全部读取到Connection管理的用户态接收缓冲区中。然后调用由组件使用者传入的新数据到来回调函数进行处理。
 3.组件使用者进行数据的业务处理完毕后，通过Connection向使用者提供的数据发送接口，将数据写入Connection的发送缓冲区中。
-4.启动描述符在Poll模块中的IO写事件监控，就绪后，调用Channel中保存的写事件处理函数，将发送缓冲区中的数据通过Socket进行面向系统的实际数据发送。
+4.启动描述符在Poll模块中的IO写事件监控，就绪后，调用Channel中保存的写事件处理函数，将发送缓冲区中的数据通过Socket进行面向系统的实际数据发送。  
 
-  
+**Acceptor模块：**
+Acceptor模块是对Socket模块，Channel模块的⼀个整体封装，实现了对⼀个监听套接字的整体的管
+理。
+• Acceptor模块内部包含有⼀个Socket对象：实现监听套接字的操作
+• Acceptor模块内部包含有⼀个Channel对象：实现监听套接字IO事件就绪的处理
+具体处理流程如下：
+1. 实现向Channel提供可读事件的IO事件处理回调函数，函数的功能其实也就是获取新连接
+2. 为新连接构建⼀个Connection对象出来。
+   
+**TimerQueue模块：**
+TimerQueue模块是实现固定时间定时任务的模块，可以理解就是要给定时任务管理器，向定时任务管
+理器中添加⼀个任务，任务将在固定时间后被执⾏，同时也可以通过刷新定时任务来延迟任务的执
+⾏。
+这个模块主要是对Connection对象的⽣命周期管理，对⾮活跃连接进⾏超时后的释放功能。
+TimerQueue模块内部包含有⼀个timerfd：linux系统提供的定时器。
+TimerQueue模块内部包含有⼀个Channel对象：实现对timerfd的IO时间就绪回调处理
 
+**Poller模块：**
+Poller模块是对epoll进⾏封装的⼀个模块，主要实现epoll的IO事件添加，修改，移除，获取活跃连接
+功能。
 
+**EventLoop模块：**
+EventLoop模块可以理解就是我们上边所说的Reactor模块，它是对Poller模块，TimerQueue模块，
+Socket模块的⼀个整体封装，进⾏所有描述符的事件监控。
+EventLoop模块必然是⼀个对象对应⼀个线程的模块，线程内部的⽬的就是运⾏EventLoop的启动函
+数。
+EventLoop模块为了保证整个服务器的线程安全问题，因此要求使⽤者对于Connection的所有操作⼀
+定要在其对应的EventLoop线程内完成，不能在其他线程中进⾏（⽐如组件使⽤者使⽤Connection发
+送数据，以及关闭连接这种操作）。
+EventLoop模块保证⾃⼰内部所监控的所有描述符，都要是活跃连接，⾮活跃连接就要及时释放避免
+资源浪费。
+• EventLoop模块内部包含有⼀个eventfd：eventfd其实就是linux内核提供的⼀个事件fd，专⻔⽤于
+事件通知。
+• EventLoop模块内部包含有⼀个Poller对象：⽤于进⾏描述符的IO事件监控。
+• EventLoop模块内部包含有⼀个TimerQueue对象：⽤于进⾏定时任务的管理。
+• EventLoop模块内部包含有⼀个PendingTask队列：组件使⽤者将对Connection进⾏的所有操作，
+都加⼊到任务队列中，由EventLoop模块进⾏管理，并在EventLoop对应的线程中进⾏执⾏。
+• 每⼀个Connection对象都会绑定到⼀个EventLoop上，这样能保证对这个连接的所有操作都是在
+⼀个线程中完成的。
+具体操作流程：
+1. 通过Poller模块对当前模块管理内的所有描述符进⾏IO事件监控，有描述符事件就绪后，通过描述
+符对应的Channel进⾏事件处理。
+2. 所有就绪的描述符IO事件处理完毕后，对任务队列中的所有操作顺序进⾏执⾏。
+3. 由于epoll的事件监控，有可能会因为没有事件到来⽽持续阻塞，导致任务队列中的任务不能及时得
+到执⾏，因此创建了eventfd，添加到Poller的事件监控中，⽤于实现每次向任务队列添加任务的时
+候，通过向eventfd写⼊数据来唤醒epoll的阻塞。
 
+**TcpServer模块：**
+这个模块是⼀个整体Tcp服务器模块的封装，内部封装了Acceptor模块，EventLoopThreadPool模
+块。
+• TcpServer中包含有⼀个EventLoop对象：以备在超轻量使⽤场景中不需要EventLoop线程池，只
+需要在主线程中完成所有操作的情况。
+• TcpServer模块内部包含有⼀个EventLoopThreadPool对象：其实就是EventLoop线程池，也就是
+⼦Reactor线程池
+• TcpServer模块内部包含有⼀个Acceptor对象：⼀个TcpServer服务器，必然对应有⼀个监听套接
+字，能够完成获取客⼾端新连接，并处理的任务。
+• TcpServer模块内部包含有⼀个std::shared_ptr<Connection>的hash表：保存了所有的新建连接
+对应的Connection，注意，所有的Connection使⽤shared_ptr进⾏管理，这样能够保证在hash表
+中删除了Connection信息后，在shared_ptr计数器为0的情况下完成对Connection资源的释放操
+作。
+具体操作流程如下：
+1. 在实例化TcpServer对象过程中，完成BaseLoop的设置，Acceptor对象的实例化，以及EventLoop
+线程池的实例化，以及std::shared_ptr<Connection>的hash表的实例化。
+2. 为Acceptor对象设置回调函数：获取到新连接后，为新连接构建Connection对象，设置
+Connection的各项回调，并使⽤shared_ptr进⾏管理，并添加到hash表中进⾏管理，并为
+Connection选择⼀个EventLoop线程，为Connection添加⼀个定时销毁任务，为Connection添加
+事件监控，
+3. 启动BaseLoop
 
+**HTTP协议模块：**
+HTTP协议模块⽤于对⾼并发服务器模块进⾏协议⽀持，基于提供的协议⽀持能够更⽅便的完成指定协
+议服务器的搭建。
+⽽HTTP协议⽀持模块的实现，可以细分为以下⼏个模块。
+Util模块：
+这个模块是⼀个⼯具模块，主要提供HTTP协议模块所⽤到的⼀些⼯具函数，⽐如url编解码，⽂件读
+写....等。
+
+**HttpRequest模块：**
+这个模块是HTTP请求数据模块，⽤于保存HTTP请求数据被解析后的各项请求元素信息。
+HttpResponse模块：
+这个模块是HTTP响应数据模块，⽤于业务处理后设置并保存HTTP响应数据的的各项元素信息，最终
+会被按照HTTP协议响应格式组织成为响应信息发送给客⼾端。
+
+**HttpContext模块：**
+这个模块是⼀个HTTP请求接收的上下⽂模块，主要是为了防⽌在⼀次接收的数据中，不是⼀个完整的
+HTTP请求，则解析过程并未完成，⽆法进⾏完整的请求处理，需要在下次接收到新数据后继续根据上
+下⽂进⾏解析，最终得到⼀个HttpRequest请求信息对象，因此在请求数据的接收以及解析部分需要⼀
+个上下⽂来进⾏控制接收和处理节奏。
+
+**HttpServer模块：**
+这个模块是最终给组件使⽤者提供的HTTP服务器模块了，⽤于以简单的接⼝实现HTTP服务器的搭
+建。
+HttpServer模块内部包含有⼀个TcpServer对象：TcpServer对象实现服务器的搭建
+HttpServer模块内部包含有两个提供给TcpServer对象的接⼝：连接建⽴成功设置上下⽂接⼝，数据处
+理接⼝。
+HttpServer模块内部包含有⼀个hash-map表存储请求与处理函数的映射表：组件使⽤者向
+HttpServer设置哪些请求应该使⽤哪些函数进⾏处理，等TcpServer收到对应的请求就会使⽤对应的函
+数进⾏处理。
 
 
 
